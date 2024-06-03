@@ -15,11 +15,15 @@ This project is a simple social networking API built using Django Rest Framework
 ## Clone the Repository
 
 git clone https://github.com/yourusername/social-network-api.git
+
+##
 cd social-network-api
 
 
-## Make environment and activate
+## Create environment
 py -m venv env
+
+## Activate environment
 .\env\Scripts\activate
 
 ## Installation
