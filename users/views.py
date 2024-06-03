@@ -8,11 +8,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from .serializers import UserSerializer
 from social_network.mongo import users_collection
-from bson.objectid import ObjectId
 from django.core.mail import send_mail
 from rest_framework.pagination import PageNumberPagination
 from django.core.cache import cache
-import time
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -39,8 +37,6 @@ def signup(request):
 def login(request):
     data = request.data
     user = users_collection.find_one({"email": data['email']})
-    print(check_password(data['password'], user['password']))
-    print((data['password'], user['password']))
     # if not user or not check_password(data['password'], user['password']):
     if not user or not(data['password'] == user['password']):
         return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
