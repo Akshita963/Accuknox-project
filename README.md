@@ -33,4 +33,4 @@ pip install -r requirements.txt
 python manage.py runserver
 
 ## Postman Collection Link
-https://atdbcg.postman.co/workspace/Team-Workspace~bb4562f9-fe02-49dc-838b-8265d7a4ea85/collection/20346741-02e00c61-267b-40ee-b2b0-0af46e2ea7d9?action=share&creator=20346741
+https://www.postman.com/atdbcg/workspace/project/collection/20346741-02e00c61-267b-40ee-b2b0-0af46e2ea7d9?action=share&creator=20346741
