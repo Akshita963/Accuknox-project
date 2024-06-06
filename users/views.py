@@ -1,18 +1,21 @@
-# api/views.py
+from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from django.contrib.auth.hashers import make_password, check_password
-from django.contrib.auth.models import User
-from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from .serializers import UserSerializer
 from social_network.mongo import users_collection
-# from bson.objectid import ObjectId
-from django.core.mail import send_mail
-from rest_framework.pagination import PageNumberPagination
 from django.core.cache import cache
-# import time
+from .utils import MongoUser, get_tokens_for_user 
+from django.contrib.auth.models import User
+from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.pagination import PageNumberPagination
+from django.contrib.auth import authenticate
+from django.middleware.csrf import get_token
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -22,6 +25,7 @@ def signup(request):
         return Response({"error": "Email already exists"}, status=status.HTTP_400_BAD_REQUEST)
     
     hashed_password = make_password(data['password'])
+
     user_data = {
         "username": data['username'],
         "email": data['email'],
@@ -29,10 +33,15 @@ def signup(request):
         "friends": [],
         "friend_requests": []
     }
+
     result = users_collection.insert_one(user_data)
     
     user = users_collection.find_one({"_id": result.inserted_id})
-    return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+    token = get_tokens_for_user(user)
+    return Response({
+        "user": UserSerializer(user).data,
+        "token": token
+    }, status=status.HTTP_201_CREATED)
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -40,31 +49,40 @@ def login(request):
     data = request.data
     user = users_collection.find_one({"email": data['email']})
     if not user or not check_password(data['password'], user['password']):
-        return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
+
+    tokens = get_tokens_for_user(user)
     
-    return Response(UserSerializer(user).data, status=status.HTTP_200_OK)
-
-@api_view(['GET'])
-def search_users(request):
-    keyword = request.query_params.get('keyword', '')
-    page_number = request.query_params.get('page', 1)
-    paginator = PageNumberPagination()
-    paginator.page_size = 10
-
-    if "@" in keyword:
-        users = users_collection.find({"email": keyword})
-    else:
-        users = users_collection.find({"username": {"$regex": keyword, "$options": "i"}})
-
-    paginated_users = paginator.paginate_queryset(list(users), request)
-    serialized_users = UserSerializer(paginated_users, many=True).data
-    return paginator.get_paginated_response(serialized_users)
-
+    response = Response({'detail': 'Login successful'})
+    response.set_cookie(
+        key='access_token',
+        value=tokens['access'],
+        httponly=True,
+        secure=False, 
+        samesite='Lax'
+    )
+    response.set_cookie(
+        key='refresh_token',
+        value=tokens['refresh'],
+        httponly=True,
+        secure=False,  
+        samesite='Lax' 
+    )
+    response['X-CSRFToken'] = get_token(request)
+    return response
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+def logout_view(request):
+    response = Response({'detail': 'Logout successful'})
+    response.delete_cookie('access_token')
+    response.delete_cookie('refresh_token')
+    return response
+    
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def send_friend_request(request):
-    from_user = request.data['from_user']
+    from_user = request.user.email  
     to_user_email = request.data['to_user_email']
     if from_user == to_user_email:
         return Response({"error": "Cannot send friend request to yourself"}, status=status.HTTP_400_BAD_REQUEST)
@@ -85,12 +103,29 @@ def send_friend_request(request):
     
     return Response({"message": "Friend request sent"}, status=status.HTTP_200_OK)
 
+@api_view(['GET'])
+# @permission_classes([AllowAny])
+def search_users(request):
+    keyword = request.query_params.get('keyword', '')
+    page_number = request.query_params.get('page', 1)
+    paginator = PageNumberPagination()
+    paginator.page_size = 10
+
+    if "@" in keyword:
+        users = users_collection.find({"email": keyword})
+    else:
+        users = users_collection.find({"username": {"$regex": keyword, "$options": "i"}})
+
+    paginated_users = paginator.paginate_queryset(list(users), request)
+    serialized_users = UserSerializer(paginated_users, many=True).data
+    return paginator.get_paginated_response(serialized_users)
+
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def handle_friend_request(request):
     from_user_email = request.data['from_user_email']
     action = request.data['action']
-    self_email = request.data['email']
+    self_email = request.user.email
     
     if action == 'accept':
         users_collection.update_one({"email": self_email}, {"$pull": {"friend_requests": from_user_email}, "$push": {"friends": from_user_email}})
@@ -101,15 +136,40 @@ def handle_friend_request(request):
     return Response({"message": f"Friend request {action}ed"}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def list_friends(request):
-    user = users_collection.find_one({"email": request.data['email']})
+    self_email = request.user.email
+    user = users_collection.find_one({"email": self_email})
     friends = user['friends']
     return Response({"friends": friends}, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def list_pending_requests(request):
-    user = users_collection.find_one({"email": request.data['email']})
+    self_email = request.user.email
+    user = users_collection.find_one({"email": self_email})
     pending_requests = user['friend_requests']
     return Response({"pending_requests": pending_requests}, status=status.HTTP_200_OK)
+
+
+class CookieTokenRefreshView(TokenRefreshView):
+    def post(self, request, *args, **kwargs):
+        refresh_token = request.COOKIES.get('refresh_token')
+        if not refresh_token:
+            return Response({'detail': 'Refresh token not found'}, status=400)
+
+        serializer = self.get_serializer(data={'refresh': refresh_token})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception as e:
+            return Response({'detail': str(e)}, status=400)
+
+        response = Response(serializer.validated_data)
+        response.set_cookie(
+            key='access_token',
+            value=serializer.validated_data['access'],
+            httponly=True,
+            secure=False,  
+            samesite='Lax' 
+        )
+        return response
